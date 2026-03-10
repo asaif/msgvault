@@ -25,6 +25,7 @@ type APIMessage struct {
 
 // APIAttachment represents attachment metadata for API responses.
 type APIAttachment struct {
+	ID       int64
 	Filename string
 	MimeType string
 	Size     int64
@@ -149,12 +150,12 @@ func (s *Store) GetMessage(id int64) (*APIMessage, error) {
 	}
 
 	// Get attachments
-	attRows, err := s.db.Query("SELECT filename, mime_type, size FROM attachments WHERE message_id = ?", id)
+	attRows, err := s.db.Query("SELECT id, filename, mime_type, size FROM attachments WHERE message_id = ?", id)
 	if err == nil {
 		defer attRows.Close()
 		for attRows.Next() {
 			var att APIAttachment
-			if err := attRows.Scan(&att.Filename, &att.MimeType, &att.Size); err == nil {
+			if err := attRows.Scan(&att.ID, &att.Filename, &att.MimeType, &att.Size); err == nil {
 				m.Attachments = append(m.Attachments, att)
 			}
 		}
@@ -493,4 +494,129 @@ func (s *Store) getLabels(messageID int64) ([]string, error) {
 		return nil, fmt.Errorf("iterate labels: %w", err)
 	}
 	return labels, nil
+}
+
+// GetAttachmentFile returns the filename, MIME type, and relative storage path for
+// serving an attachment from disk. found=false (and no error) means not found.
+func (s *Store) GetAttachmentFile(id int64) (filename, mimeType, storagePath string, found bool, err error) {
+	err = s.db.QueryRow(
+		`SELECT COALESCE(filename,''), COALESCE(mime_type,''), storage_path
+		 FROM attachments WHERE id = ?`, id,
+	).Scan(&filename, &mimeType, &storagePath)
+	if err == sql.ErrNoRows {
+		return "", "", "", false, nil
+	}
+	if err != nil {
+		return "", "", "", false, err
+	}
+	return filename, mimeType, storagePath, true, nil
+}
+
+// AttachmentListItem represents an attachment row for gallery/list API responses.
+type AttachmentListItem struct {
+	ID        int64
+	Filename  string
+	MimeType  string
+	Size      int64
+	MessageID int64
+	FromEmail string
+	FromName  string
+	SentAt    time.Time
+}
+
+// ListAttachments returns a paginated list of attachments with message and sender info.
+// mimePatterns is a list of SQL LIKE patterns (e.g. ["image/%"]) to filter on
+// mime_type; pass nil or empty to return all attachments.
+// sortField is "date" (default), "size", or "name".  sortDir is "desc" or "asc".
+func (s *Store) ListAttachments(mimePatterns []string, page, pageSize int, sortField, sortDir string) ([]AttachmentListItem, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 500 {
+		pageSize = 100
+	}
+	offset := (page - 1) * pageSize
+
+	// Build WHERE clause for MIME filtering.
+	var whereParts []string
+	var args []interface{}
+	whereParts = append(whereParts, "a.storage_path != ''")
+	if len(mimePatterns) > 0 {
+		placeholders := make([]string, len(mimePatterns))
+		for i, p := range mimePatterns {
+			placeholders[i] = "a.mime_type LIKE ?"
+			args = append(args, p)
+		}
+		whereParts = append(whereParts, "("+strings.Join(placeholders, " OR ")+")")
+	}
+	where := strings.Join(whereParts, " AND ")
+
+	// Count
+	countSQL := fmt.Sprintf(`
+		SELECT COUNT(*) FROM attachments a
+		WHERE %s`, where)
+	var total int64
+	if err := s.db.QueryRow(countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count attachments: %w", err)
+	}
+
+	// Resolve sort.
+	orderCol := "m.sent_at"
+	switch sortField {
+	case "size":
+		orderCol = "a.size"
+	case "name":
+		orderCol = "a.filename"
+	}
+	dir := "DESC"
+	if strings.ToLower(sortDir) == "asc" {
+		dir = "ASC"
+	}
+
+	// Main query — uses LEFT JOIN to get a single sender row without duplicates.
+	listSQL := fmt.Sprintf(`
+		SELECT
+			a.id,
+			COALESCE(a.filename, '') AS filename,
+			COALESCE(a.mime_type, '') AS mime_type,
+			COALESCE(a.size, 0) AS size,
+			a.message_id,
+			COALESCE(p.email_address, '') AS from_email,
+			COALESCE(p.display_name, '') AS from_name,
+			COALESCE(m.sent_at, m.internal_date, '') AS sent_at
+		FROM attachments a
+		JOIN messages m ON m.id = a.message_id
+		LEFT JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
+		LEFT JOIN participants p ON p.id = mr.participant_id
+		WHERE %s AND m.deleted_from_source_at IS NULL
+		ORDER BY %s %s
+		LIMIT ? OFFSET ?`, where, orderCol, dir)
+
+	queryArgs := append(args, pageSize, offset)
+	rows, err := s.db.Query(listSQL, queryArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list attachments: %w", err)
+	}
+	defer rows.Close()
+
+	var items []AttachmentListItem
+	for rows.Next() {
+		var it AttachmentListItem
+		var sentAtStr string
+		if err := rows.Scan(&it.ID, &it.Filename, &it.MimeType, &it.Size, &it.MessageID, &it.FromEmail, &it.FromName, &sentAtStr); err != nil {
+			return nil, 0, fmt.Errorf("scan attachment: %w", err)
+		}
+		if t, err := time.Parse("2006-01-02T15:04:05Z", sentAtStr); err == nil {
+			it.SentAt = t
+		} else if t, err := time.Parse("2006-01-02 15:04:05", sentAtStr); err == nil {
+			it.SentAt = t
+		} else if t, err := time.Parse(time.RFC3339, sentAtStr); err == nil {
+			it.SentAt = t
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate attachments: %w", err)
+	}
+	return items, total, nil
 }
