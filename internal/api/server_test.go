@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wesm/msgvault/internal/config"
+	"github.com/wesm/msgvault/internal/store"
 )
 
 // testLogger returns a logger for tests that discards output
@@ -87,6 +88,14 @@ func (m *mockStore) GetMessage(id int64) (*APIMessage, error) {
 
 func (m *mockStore) SearchMessages(query string, offset, limit int) ([]APIMessage, int64, error) {
 	return m.messages, m.total, nil
+}
+
+func (m *mockStore) GetAttachmentFile(id int64) (filename, mimeType, storagePath string, found bool, err error) {
+	return "", "", "", false, nil
+}
+
+func (m *mockStore) ListAttachments(mimePatterns []string, page, pageSize int, sortField, sortDir string) ([]store.AttachmentListItem, int64, error) {
+	return nil, 0, nil
 }
 
 func TestHealthEndpoint(t *testing.T) {
