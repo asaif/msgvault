@@ -81,6 +81,7 @@ type MessageDetail struct {
 
 // AttachmentInfo represents attachment metadata in API responses.
 type AttachmentInfo struct {
+	ID       int64  `json:"id"`
 	Filename string `json:"filename"`
 	MimeType string `json:"mime_type"`
 	Size     int64  `json:"size_bytes"`
@@ -226,11 +227,95 @@ func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 
 	attachments := make([]AttachmentInfo, 0, len(msg.Attachments))
 	for _, att := range msg.Attachments {
-		attachments = append(attachments, AttachmentInfo(att))
+		attachments = append(attachments, AttachmentInfo{
+			ID:       att.ID,
+			Filename: att.Filename,
+			MimeType: att.MimeType,
+			Size:     att.Size,
+		})
 	}
 	detail.Attachments = attachments
 
 	writeJSON(w, http.StatusOK, detail)
+}
+
+// handleGetAttachment serves an attachment file from disk.
+func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "Database not available")
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_id", "Attachment ID must be a number")
+		return
+	}
+
+	filename, mimeType, storagePath, found, err := s.store.GetAttachmentFile(id)
+	if err != nil {
+		s.logger.Error("failed to get attachment", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to retrieve attachment")
+		return
+	}
+	if !found || storagePath == "" {
+		writeError(w, http.StatusNotFound, "not_found", "Attachment not found")
+		return
+	}
+
+	// Resolve within AttachmentsDir; reject any path traversal.
+	baseDir := s.cfg.AttachmentsDir()
+	fullPath := filepath.Join(baseDir, storagePath)
+	rel, relErr := filepath.Rel(baseDir, fullPath)
+	if relErr != nil || strings.HasPrefix(rel, "..") {
+		writeError(w, http.StatusForbidden, "forbidden", "Invalid attachment path")
+		return
+	}
+
+	f, err := os.Open(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeError(w, http.StatusNotFound, "not_found", "Attachment file not found on disk")
+		} else {
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to open attachment")
+		}
+		return
+	}
+	defer f.Close()
+
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	dispName := filename
+	if dispName == "" {
+		dispName = "attachment"
+	}
+
+	// Use inline for browser-previewable types (images, PDF, text, video, audio).
+	disposition := "attachment"
+	if isPreviewable(mimeType) {
+		disposition = "inline"
+	}
+
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename=%q`, disposition, dispName))
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+
+	var modTime time.Time
+	if stat, err := f.Stat(); err == nil {
+		modTime = stat.ModTime()
+	}
+	http.ServeContent(w, r, dispName, modTime, f)
+}
+
+// isPreviewable returns true for MIME types browsers can render inline.
+func isPreviewable(mimeType string) bool {
+	return strings.HasPrefix(mimeType, "image/") ||
+		mimeType == "application/pdf" ||
+		strings.HasPrefix(mimeType, "text/") ||
+		strings.HasPrefix(mimeType, "video/") ||
+		strings.HasPrefix(mimeType, "audio/")
 }
 
 // handleSearch searches messages.
@@ -280,6 +365,39 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 // handleListAccounts returns all configured accounts.
 func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
+	// Prefer engine (reads from DB sources table — includes all accounts added via CLI).
+	if s.engine != nil {
+		dbAccounts, err := s.engine.ListAccounts(r.Context())
+		if err == nil {
+			accounts := make([]AccountInfo, 0, len(dbAccounts))
+			for _, acc := range dbAccounts {
+				info := AccountInfo{
+					Email:       acc.Identifier,
+					DisplayName: acc.DisplayName,
+					Enabled:     true,
+				}
+				// Enrich with scheduler status if available.
+				if s.scheduler != nil {
+					for _, st := range s.scheduler.Status() {
+						if st.Email == acc.Identifier {
+							if !st.LastRun.IsZero() {
+								info.LastSyncAt = st.LastRun.UTC().Format(time.RFC3339)
+							}
+							if !st.NextRun.IsZero() {
+								info.NextSyncAt = st.NextRun.UTC().Format(time.RFC3339)
+							}
+							break
+						}
+					}
+				}
+				accounts = append(accounts, info)
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"accounts": accounts})
+			return
+		}
+	}
+
+	// Fall back to config-based accounts (requires scheduler).
 	if s.scheduler == nil {
 		writeError(w, http.StatusServiceUnavailable, "scheduler_unavailable", "Scheduler not available")
 		return
