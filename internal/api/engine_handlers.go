@@ -358,3 +358,83 @@ func parseSortDirection(s string) query.SortDirection {
 	}
 	return query.SortDesc
 }
+
+// AttachmentListItemResponse is the JSON representation of a store.AttachmentListItem.
+type AttachmentListItemResponse struct {
+	ID        int64  `json:"id"`
+	Filename  string `json:"filename"`
+	MimeType  string `json:"mime_type"`
+	SizeBytes int64  `json:"size_bytes"`
+	MessageID int64  `json:"message_id"`
+	From      string `json:"from"`
+	Date      string `json:"date"`
+}
+
+// handleListAttachments returns a paginated list of attachments with sender + date info.
+//
+//	GET /api/v1/engine/attachments
+//	  ?file_type=image|pdf|calendar|document|spreadsheet|presentation|media|zip
+//	  &page=1&page_size=100
+//	  &sort=date|size|name&dir=asc|desc
+func (s *Server) handleListAttachments(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "Database not available")
+		return
+	}
+
+	q := r.URL.Query()
+
+	page, _ := strconv.Atoi(q.Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(q.Get("page_size"))
+	if pageSize < 1 || pageSize > 500 {
+		pageSize = 100
+	}
+
+	var mimePatterns []string
+	if ft := q.Get("file_type"); ft != "" {
+		mimePatterns = query.MimeCategoryPatterns(ft)
+		if len(mimePatterns) == 0 {
+			writeError(w, http.StatusBadRequest, "invalid_file_type",
+				"file_type must be one of: image, pdf, calendar, document, spreadsheet, presentation, media, zip")
+			return
+		}
+	}
+
+	items, total, err := s.store.ListAttachments(mimePatterns, page, pageSize, q.Get("sort"), q.Get("dir"))
+	if err != nil {
+		s.logger.Error("list attachments failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "query_error", "Attachment query failed")
+		return
+	}
+
+	resp := make([]AttachmentListItemResponse, len(items))
+	for i, it := range items {
+		from := it.FromEmail
+		if it.FromName != "" {
+			from = it.FromName + " <" + it.FromEmail + ">"
+		}
+		var dateStr string
+		if !it.SentAt.IsZero() {
+			dateStr = it.SentAt.UTC().Format(time.RFC3339)
+		}
+		resp[i] = AttachmentListItemResponse{
+			ID:        it.ID,
+			Filename:  it.Filename,
+			MimeType:  it.MimeType,
+			SizeBytes: it.Size,
+			MessageID: it.MessageID,
+			From:      from,
+			Date:      dateStr,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"page":      page,
+		"page_size": pageSize,
+		"total":     total,
+		"items":     resp,
+	})
+}
