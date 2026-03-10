@@ -25,6 +25,8 @@ type MessageStore interface {
 	ListMessages(offset, limit int) ([]APIMessage, int64, error)
 	GetMessage(id int64) (*APIMessage, error)
 	SearchMessages(query string, offset, limit int) ([]APIMessage, int64, error)
+	GetAttachmentFile(id int64) (filename, mimeType, storagePath string, found bool, err error)
+	ListAttachments(mimePatterns []string, page, pageSize int, sortField, sortDir string) ([]store.AttachmentListItem, int64, error)
 }
 
 // StoreStats is an alias for store.Stats — single source of truth.
@@ -117,13 +119,17 @@ func (s *Server) setupRouter() chi.Router {
 		r.Get("/messages", s.handleListMessages)
 		r.Get("/messages/{id}", s.handleGetMessage)
 
+		// Attachments (serve from content-addressed disk store)
+		r.Get("/attachments/{id}", s.handleGetAttachment)
+
+		// Search
+		r.Get("/search", s.handleSearch)
+
 		// Engine-powered endpoints (available when query engine is attached)
 		r.Get("/aggregate", s.handleAggregate)
 		r.Get("/engine/messages", s.handleEngineMessages)
 		r.Get("/engine/search", s.handleEngineSearch)
-
-		// Search
-		r.Get("/search", s.handleSearch)
+		r.Get("/engine/attachments", s.handleListAttachments)
 
 		// Accounts and sync
 		r.Get("/accounts", s.handleListAccounts)
