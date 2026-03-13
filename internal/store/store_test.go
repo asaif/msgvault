@@ -416,11 +416,11 @@ func TestStore_Attachment(t *testing.T) {
 		WithAttachmentCount(1).
 		Create(t, f.Store)
 
-	err := f.Store.UpsertAttachment(msgID, "document.pdf", "application/pdf", "/path/to/file", "abc123hash", 1024)
+	err := f.Store.UpsertAttachment(msgID, "document.pdf", "application/pdf", "/path/to/file", "abc123hash", 1024, false, "")
 	testutil.MustNoErr(t, err, "UpsertAttachment()")
 
 	// Upsert same attachment (should not error, dedupe by content_hash)
-	err = f.Store.UpsertAttachment(msgID, "document.pdf", "application/pdf", "/path/to/file", "abc123hash", 1024)
+	err = f.Store.UpsertAttachment(msgID, "document.pdf", "application/pdf", "/path/to/file", "abc123hash", 1024, false, "")
 	testutil.MustNoErr(t, err, "UpsertAttachment() duplicate")
 
 	stats, err := f.Store.GetStats()

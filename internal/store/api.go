@@ -148,8 +148,8 @@ func (s *Store) GetMessage(id int64) (*APIMessage, error) {
 		m.Body = bodyHTML.String
 	}
 
-	// Get attachments
-	attRows, err := s.db.Query("SELECT filename, mime_type, size FROM attachments WHERE message_id = ?", id)
+	// Get attachments (exclude inline/signature images)
+	attRows, err := s.db.Query("SELECT filename, mime_type, size FROM attachments WHERE message_id = ? AND is_inline = 0", id)
 	if err == nil {
 		defer attRows.Close()
 		for attRows.Next() {

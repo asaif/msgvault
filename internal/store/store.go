@@ -243,6 +243,19 @@ func (s *Store) InitSchema() error {
 		s.fts5Available = true
 	}
 
+	// Migrations: add columns that may be missing in older databases.
+	migrations := []string{
+		`ALTER TABLE attachments ADD COLUMN is_inline BOOLEAN NOT NULL DEFAULT 0`,
+		`ALTER TABLE attachments ADD COLUMN content_id TEXT`,
+	}
+	for _, m := range migrations {
+		if _, err := s.db.Exec(m); err != nil {
+			if !isSQLiteError(err, "duplicate column") {
+				return fmt.Errorf("migration %q: %w", m, err)
+			}
+		}
+	}
+
 	return nil
 }
 

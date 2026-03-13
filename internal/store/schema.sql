@@ -205,6 +205,10 @@ CREATE TABLE IF NOT EXISTS attachments (
     mime_type TEXT,
     size INTEGER,
 
+    -- Inline / signature image detection
+    is_inline BOOLEAN NOT NULL DEFAULT 0,  -- true for Content-Disposition: inline parts
+    content_id TEXT,                        -- Content-ID header (cid: references in HTML body)
+
     -- Content-addressed storage (deduplication)
     content_hash TEXT,              -- SHA-256 of content
     storage_path TEXT NOT NULL,     -- relative path: ab/abcd1234...

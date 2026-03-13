@@ -819,7 +819,7 @@ func (s *Store) backfillFTSBatch(fromID, toID int64) (int64, error) {
 }
 
 // UpsertAttachment stores an attachment record.
-func (s *Store) UpsertAttachment(messageID int64, filename, mimeType, storagePath, contentHash string, size int) error {
+func (s *Store) UpsertAttachment(messageID int64, filename, mimeType, storagePath, contentHash string, size int, isInline bool, contentID string) error {
 	// Check if attachment already exists (by message_id and content_hash)
 	var existingID int64
 	err := s.db.QueryRow(`
@@ -836,8 +836,8 @@ func (s *Store) UpsertAttachment(messageID int64, filename, mimeType, storagePat
 
 	// Insert new attachment
 	_, err = s.db.Exec(`
-		INSERT INTO attachments (message_id, filename, mime_type, storage_path, content_hash, size, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-	`, messageID, filename, mimeType, storagePath, contentHash, size)
+		INSERT INTO attachments (message_id, filename, mime_type, storage_path, content_hash, size, is_inline, content_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+	`, messageID, filename, mimeType, storagePath, contentHash, size, isInline, contentID)
 	return err
 }

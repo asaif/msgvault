@@ -115,13 +115,13 @@ func fetchParticipantsShared(ctx context.Context, db *sql.DB, tablePrefix string
 	return rows.Err()
 }
 
-// fetchAttachmentsShared fetches attachments for a single message detail.
+// fetchAttachmentsShared fetches non-inline attachments for a single message detail.
 // tablePrefix is "" for direct SQLite or "sqlite_db." for DuckDB's sqlite_scan.
 func fetchAttachmentsShared(ctx context.Context, db *sql.DB, tablePrefix string, msg *MessageDetail) error {
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT id, COALESCE(filename, ''), COALESCE(mime_type, ''), COALESCE(size, 0), COALESCE(content_hash, '')
 		FROM %sattachments
-		WHERE message_id = ?
+		WHERE message_id = ? AND is_inline = 0
 	`, tablePrefix), msg.ID)
 	if err != nil {
 		return err
@@ -328,7 +328,7 @@ func MimeCategoryExistsSQL(category, tablePrefix, messageIDExpr string) (string,
 		args[i] = p
 	}
 	sql := fmt.Sprintf(
-		"EXISTS (SELECT 1 FROM %sattachments a WHERE a.message_id = %s AND (%s))",
+		"EXISTS (SELECT 1 FROM %sattachments a WHERE a.message_id = %s AND a.is_inline = 0 AND (%s))",
 		tablePrefix, messageIDExpr, strings.Join(placeHolders, " OR "),
 	)
 	return sql, args, true
